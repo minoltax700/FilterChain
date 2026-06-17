@@ -36,5 +36,24 @@ struct TextureCache {
         
         return mtlTexture
     }
-        
+    
+    func createTextureBackedPixelBuffer(width: Int, height: Int) -> (pixelBuffer: CVPixelBuffer, texture: MTLTexture)? {
+        var pixelBuffer: CVPixelBuffer?
+        let attrs: [String: Any] = [
+            kCVPixelBufferIOSurfacePropertiesKey as String: [:],
+            kCVPixelBufferMetalCompatibilityKey as String: true
+        ]
+        let status = CVPixelBufferCreate(
+            kCFAllocatorDefault,
+            width,
+            height,
+            kCVPixelFormatType_32BGRA, // TODO: MTLPixelFormat to CVPixelFormatType mapping
+            attrs as CFDictionary,
+            &pixelBuffer
+        )
+        guard status == kCVReturnSuccess, let pixelBuffer else { return nil }
+        guard let texture = createTexture(from: pixelBuffer) else { return nil }
+        return (pixelBuffer, texture)
+    }
+    
 }
