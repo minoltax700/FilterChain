@@ -24,8 +24,12 @@ public final class FilterChain: NSObject {
     private let textureCache: TextureCache
     private var inputTexture: MTLTexture?
     
-    private lazy var passThroughPipeline: MTLRenderPipelineState? = {
-        return try? makePipeline(vertex: "passThroughVertex", fragment: "passThroughFragment", bundle: Bundle(for: Self.self))
+    private lazy var passThroughPipeline: MTLRenderPipelineState = {
+        do {
+            return try makePipeline(vertex: "passThroughVertex", fragment: "passThroughFragment", bundle: .module)
+        } catch {
+            fatalError("Pass through shader is required: \(error)")
+        }
     }()
     private var pipelines: [MTLRenderPipelineState] = []
     private var libraryForBundle: [Bundle: MTLLibrary] = [:]
@@ -104,9 +108,6 @@ public final class FilterChain: NSObject {
         }
         
         if pipelines.isEmpty {
-            guard let passThroughPipeline else {
-                throw FilterChainError.noMetalPipeline
-            }
             encoder.setRenderPipelineState(passThroughPipeline)
             encoder.setFragmentTexture(inputTexture, index: 0)
             encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 3)
@@ -165,14 +166,13 @@ extension FilterChain: MTKViewDelegate {
         }
         
         if pipelines.isEmpty {
-            guard let passThroughPipeline else { return }
             encoder.setRenderPipelineState(passThroughPipeline)
             encoder.setFragmentTexture(inputTexture, index: 0)
             encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 3)
         } else {
             // TODO: Actually support rendering external Filters
         }
-        
+
         encoder.endEncoding()
         commandBuffer.present(drawable)
         commandBuffer.commit()
