@@ -39,6 +39,7 @@ final class CameraSettings {
     var resolution: Resolution = .photo
     var hdrEnabled: Bool = true
     var colorSpace: ColorSpace = .sRGB
+    var vintageBWEnabled: Bool = false
 }
 
 struct CameraSettingsSnapshot: Sendable {

@@ -22,6 +22,7 @@
 		28CD6B362FE9CEC300144844 /* CameraSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 28CD6B232FE9CEC300144844 /* CameraSettings.swift */; };
 		28CD6B372FE9CEC300144844 /* CameraSettingsPopover.swift in Sources */ = {isa = PBXBuildFile; fileRef = 28CD6B1C2FE9CEC300144844 /* CameraSettingsPopover.swift */; };
 		28CD6B382FE9CEC300144844 /* CameraView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 28CD6B1D2FE9CEC300144844 /* CameraView.swift */; };
+		28CD6B392FE9CEC300144844 /* VintageBlackAndWhite.metal in Sources */ = {isa = PBXBuildFile; fileRef = 28CD6B3A2FE9CEC300144844 /* VintageBlackAndWhite.metal */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -39,6 +40,7 @@
 		28CD6B252FE9CEC300144844 /* VideoDataOutputSampleBufferProcessor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoDataOutputSampleBufferProcessor.swift; sourceTree = "<group>"; };
 		28CD6B272FE9CEC300144844 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		28CD6B292FE9CEC300144844 /* ExampleApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExampleApp.swift; sourceTree = "<group>"; };
+		28CD6B3A2FE9CEC300144844 /* VintageBlackAndWhite.metal */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.metal; path = VintageBlackAndWhite.metal; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -61,8 +63,17 @@
 				28CD6B262FE9CEC300144844 /* Camera */,
 				28CD6B272FE9CEC300144844 /* ContentView.swift */,
 				28CD6B292FE9CEC300144844 /* ExampleApp.swift */,
+				28CD6B3B2FE9CEC300144844 /* Filters */,
 				28CD6ACB2FE3C01C00144844 /* Products */,
 			);
+			sourceTree = "<group>";
+		};
+		28CD6B3B2FE9CEC300144844 /* Filters */ = {
+			isa = PBXGroup;
+			children = (
+				28CD6B3A2FE9CEC300144844 /* VintageBlackAndWhite.metal */,
+			);
+			path = Filters;
 			sourceTree = "<group>";
 		};
 		28CD6ACB2FE3C01C00144844 /* Products */ = {
@@ -187,6 +198,7 @@
 				28CD6B362FE9CEC300144844 /* CameraSettings.swift in Sources */,
 				28CD6B372FE9CEC300144844 /* CameraSettingsPopover.swift in Sources */,
 				28CD6B382FE9CEC300144844 /* CameraView.swift in Sources */,
+				28CD6B392FE9CEC300144844 /* VintageBlackAndWhite.metal in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

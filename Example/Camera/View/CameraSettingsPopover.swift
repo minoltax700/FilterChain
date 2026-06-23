@@ -22,6 +22,10 @@ struct CameraSettingsPopover: View {
                         }
                     }
                 }
+
+                Section("Filters") {
+                    Toggle("Vintage B&W", isOn: bindingVintageBW)
+                }
             }
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
@@ -51,6 +55,13 @@ struct CameraSettingsPopover: View {
         Binding(
             get: { session.settings.colorSpace },
             set: { session.settings.colorSpace = $0; session.applyCameraSettings() }
+        )
+    }
+
+    private var bindingVintageBW: Binding<Bool> {
+        Binding(
+            get: { session.settings.vintageBWEnabled },
+            set: { session.settings.vintageBWEnabled = $0; session.applyFilterSettings() }
         )
     }
 

@@ -16,9 +16,19 @@ final class CameraSession {
 
     private let cameraActor = CameraActor()
     private var configured = false
+    private var filterChain: FilterChain?
 
     func attachFilterChain(_ filterChain: FilterChain) {
+        self.filterChain = filterChain
         Task { await cameraActor.setFilterChain(filterChain) }
+    }
+
+    func applyFilterSettings() {
+        guard let filterChain else { return }
+        let filters: [Filter] = settings.vintageBWEnabled
+            ? [Filter(fragmentFunction: "vintageBWFragment", bundle: .main)]
+            : []
+        try? filterChain.setFilters(filters)
     }
 
     func requestPermissionsAndConfigure() async {
