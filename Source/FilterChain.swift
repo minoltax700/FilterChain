@@ -14,166 +14,223 @@ public enum FilterChainError: Error {
 
 /// A renderer for a linear sequence of Filters.
 public final class FilterChain: NSObject {
-    /// Set as MTKViewDelegate for view-driven, pull-style rendering.
     public var mtkViewDelegate: MTKViewDelegate?
-    
+
     private let device: MTLDevice
     private let commandQueue: MTLCommandQueue
-    
     private let pixelFormat: MTLPixelFormat
     private let textureCache: TextureCache
+    private let passThroughLibrary: MTLLibrary
+    private let passThroughPipeline: MTLRenderPipelineState
+    private let intermediatePool: IntermediateTexturePool
+
     private var inputTexture: MTLTexture?
-    
-    private lazy var passThroughPipeline: MTLRenderPipelineState = {
-        do {
-            return try makePipeline(vertex: "passThroughVertex", fragment: "passThroughFragment", bundle: .module)
-        } catch {
-            fatalError("Pass through shader is required: \(error)")
-        }
-    }()
     private var pipelines: [MTLRenderPipelineState] = []
     private var libraryForBundle: [Bundle: MTLLibrary] = [:]
-    
-    /// Pass in the pixel format to set it for the internal texture cache and the pipeline descriptor color attachment.
+
     public init?(pixelFormat: MTLPixelFormat) {
         guard let device = MTLCreateSystemDefaultDevice(),
               let commandQueue = device.makeCommandQueue(),
-              let textureCache = TextureCache(device: device, pixelFormat: pixelFormat) else {
+              let textureCache = TextureCache(device: device, pixelFormat: pixelFormat),
+              let library = try? device.makeDefaultLibrary(bundle: .module),
+              let vertexFn = library.makeFunction(name: "passThroughVertex"),
+              let fragmentFn = library.makeFunction(name: "passThroughFragment") else {
             return nil
         }
+
+        let pipelineDescriptor = MTLRenderPipelineDescriptor()
+        pipelineDescriptor.vertexFunction = vertexFn
+        pipelineDescriptor.fragmentFunction = fragmentFn
+        pipelineDescriptor.colorAttachments[0].pixelFormat = pixelFormat
+
+        guard let passThroughPipeline = try? device.makeRenderPipelineState(descriptor: pipelineDescriptor) else {
+            return nil
+        }
+
         self.device = device
         self.commandQueue = commandQueue
         self.pixelFormat = pixelFormat
         self.textureCache = textureCache
+        self.passThroughLibrary = library
+        self.passThroughPipeline = passThroughPipeline
+        self.intermediatePool = IntermediateTexturePool(device: device, pixelFormat: pixelFormat)
     }
-    
-    // MARK: Pull-based (MTKView) rendering
-    
-    /// The input CMSampleBuffer to be rendered on to the MTKView. Requires the mtkViewDelegate to be set.
+
+    // MARK: - Pull-based (MTKView) rendering
+
     public func updateInput(sampleBuffer: CMSampleBuffer) {
-        guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else {
-            return
-        }
+        guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
         updateInput(pixelBuffer: pixelBuffer)
     }
-    
-    /// The input CVPixelBuffer to be rendered on to the MTKView. Requires the mtkViewDelegate to be set.
+
     public func updateInput(pixelBuffer: CVPixelBuffer) {
         inputTexture = textureCache.createTexture(from: pixelBuffer)
     }
-    
-    // MARK: Push-based rendering
-    
-    /// Renders input pixel buffer and current filters to a new output pixel buffer initialized for the caller.
+
+    // MARK: - Push-based rendering
+
     public func render(pixelBuffer: CVPixelBuffer) throws -> CVPixelBuffer {
         guard let inputTexture = textureCache.createTexture(from: pixelBuffer) else {
             throw FilterChainError.failedToMakeInputTextureFromPixelBuffer
         }
-        guard let (outputPixelBuffer, backingOutputTexture) = textureCache.createTextureBackedPixelBuffer(width: inputTexture.width, height: inputTexture.height) else {
+        guard let (outputPixelBuffer, outputTexture) = textureCache.createTextureBackedPixelBuffer(
+            width: inputTexture.width, height: inputTexture.height
+        ) else {
             throw FilterChainError.failedToMakeOutputTexture
         }
-        
-        try render(inputTexture: inputTexture, to: backingOutputTexture)
-        
+        try render(inputTexture: inputTexture, to: outputTexture)
         return outputPixelBuffer
     }
-    
-    /// Renders input texture and current filters to a new output texture initialized for the caller.
+
     public func render(texture: MTLTexture) throws -> MTLTexture {
-        let outputTextureDescriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: pixelFormat,
-                                                                               width: texture.width,
-                                                                               height: texture.height,
-                                                                               mipmapped: false)
-        outputTextureDescriptor.usage = [.renderTarget]
-        guard let outputTexture = device.makeTexture(descriptor: outputTextureDescriptor) else {
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: pixelFormat,
+            width: texture.width,
+            height: texture.height,
+            mipmapped: false
+        )
+        descriptor.usage = [.renderTarget]
+        guard let outputTexture = device.makeTexture(descriptor: descriptor) else {
             throw FilterChainError.failedToMakeOutputTexture
         }
-        
         try render(inputTexture: texture, to: outputTexture)
-        
         return outputTexture
     }
-    
-    /// Renders input texture and current filters to the given output texture.
+
     public func render(inputTexture: MTLTexture, to outputTexture: MTLTexture) throws {
-        let renderPassDescriptor = MTLRenderPassDescriptor()
-        renderPassDescriptor.colorAttachments[0].texture = outputTexture
-        renderPassDescriptor.colorAttachments[0].loadAction = .clear
-        renderPassDescriptor.colorAttachments[0].storeAction = .store
-        renderPassDescriptor.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 1)
-        
-        guard let commandBuffer = commandQueue.makeCommandBuffer(),
-              let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: renderPassDescriptor) else {
+        guard let commandBuffer = commandQueue.makeCommandBuffer() else {
             throw FilterChainError.failedToMakeRenderCommandEncoder
         }
-        
-        if pipelines.isEmpty {
-            encoder.setRenderPipelineState(passThroughPipeline)
-            encoder.setFragmentTexture(inputTexture, index: 0)
-            encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 3)
-        } else {
-            // TODO: Actually support rendering external Filters
-        }
-        
-        encoder.endEncoding()
+        try encodePipelines(from: inputTexture, to: outputTexture, in: commandBuffer)
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()
     }
-    
-    
-    // MARK: Filters
-    
-    /// Set the sequence of Filters to render. If empty, a pass through render will be done.
+
+    // MARK: - Filters
+
     public func setFilters(_ filters: [Filter]) throws {
-        pipelines = try filters.map { try makePipeline(vertex: $0.vertexFunction, fragment: $0.fragmentFunction, bundle: $0.bundle) }
+        pipelines = try filters.map { try makePipeline(for: $0) }
+        if pipelines.count <= 1 {
+            intermediatePool.invalidate()
+        }
     }
-    
-    private func makePipeline(vertex: String, fragment: String, bundle: Bundle) throws -> MTLRenderPipelineState  {
-        var library: MTLLibrary?
-        
-        if let libraryForBundle = libraryForBundle[bundle] {
-            library = libraryForBundle
-        } else {
-            library = try device.makeDefaultLibrary(bundle: bundle)
+
+    // MARK: - Private
+
+    private func encodePipelines(
+        from inputTexture: MTLTexture,
+        to outputTexture: MTLTexture,
+        in commandBuffer: MTLCommandBuffer
+    ) throws {
+        if pipelines.isEmpty {
+            try encode(pipeline: passThroughPipeline, input: inputTexture, output: outputTexture, into: commandBuffer)
+            return
         }
-        
-        guard let library else {
-            throw FilterChainError.noMetalLibrary
+        if pipelines.count == 1 {
+            try encode(pipeline: pipelines[0], input: inputTexture, output: outputTexture, into: commandBuffer)
+            return
         }
-        
-        guard let vertexFunction = library.makeFunction(name: vertex),
-              let fragmentFunction = library.makeFunction(name: fragment) else {
+        let (ping, pong) = try intermediatePool.pair(width: inputTexture.width, height: inputTexture.height)
+        var current = inputTexture
+        var usePing = true
+        for (i, pipeline) in pipelines.enumerated() {
+            let isLast = i == pipelines.count - 1
+            let output: MTLTexture = isLast ? outputTexture : (usePing ? ping : pong)
+            try encode(pipeline: pipeline, input: current, output: output, into: commandBuffer)
+            current = output
+            usePing.toggle()
+        }
+    }
+
+    private func encode(
+        pipeline: MTLRenderPipelineState,
+        input: MTLTexture,
+        output: MTLTexture,
+        into commandBuffer: MTLCommandBuffer
+    ) throws {
+        let descriptor = MTLRenderPassDescriptor()
+        descriptor.colorAttachments[0].texture = output
+        descriptor.colorAttachments[0].loadAction = .dontCare
+        descriptor.colorAttachments[0].storeAction = .store
+        guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: descriptor) else {
+            throw FilterChainError.failedToMakeRenderCommandEncoder
+        }
+        encoder.setRenderPipelineState(pipeline)
+        encoder.setFragmentTexture(input, index: 0)
+        encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 3)
+        encoder.endEncoding()
+    }
+
+    private func makePipeline(for filter: Filter) throws -> MTLRenderPipelineState {
+        guard let vertexFn = passThroughLibrary.makeFunction(name: "passThroughVertex") else {
             throw FilterChainError.noMetalFunctions
         }
-        
-        let pipelineDescriptor = MTLRenderPipelineDescriptor()
-        pipelineDescriptor.vertexFunction = vertexFunction
-        pipelineDescriptor.fragmentFunction = fragmentFunction
-        pipelineDescriptor.colorAttachments[0].pixelFormat = pixelFormat
-        return try device.makeRenderPipelineState(descriptor: pipelineDescriptor)
+        let fragmentLibrary = try cachedLibrary(for: filter.bundle)
+        guard let fragmentFn = fragmentLibrary.makeFunction(name: filter.fragmentFunction) else {
+            throw FilterChainError.noMetalFunctions
+        }
+        let descriptor = MTLRenderPipelineDescriptor()
+        descriptor.vertexFunction = vertexFn
+        descriptor.fragmentFunction = fragmentFn
+        descriptor.colorAttachments[0].pixelFormat = pixelFormat
+        return try device.makeRenderPipelineState(descriptor: descriptor)
+    }
+
+    private func cachedLibrary(for bundle: Bundle) throws -> MTLLibrary {
+        if let cached = libraryForBundle[bundle] { return cached }
+        let library = try device.makeDefaultLibrary(bundle: bundle)
+        libraryForBundle[bundle] = library
+        return library
     }
 }
 
+// MARK: - MTKViewDelegate
+
 extension FilterChain: MTKViewDelegate {
     public func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
-    
+
     public func draw(in view: MTKView) {
-        guard let drawable = view.currentDrawable,
-              let descriptor = view.currentRenderPassDescriptor,
-              let commandBuffer = commandQueue.makeCommandBuffer(),
-              let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: descriptor) else {
+        guard let inputTexture,
+              let drawable = view.currentDrawable,
+              let commandBuffer = commandQueue.makeCommandBuffer() else { return }
+
+        do {
+            if pipelines.isEmpty {
+                guard let descriptor = view.currentRenderPassDescriptor,
+                      let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: descriptor) else { return }
+                encoder.setRenderPipelineState(passThroughPipeline)
+                encoder.setFragmentTexture(inputTexture, index: 0)
+                encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 3)
+                encoder.endEncoding()
+            } else {
+                var current = inputTexture
+
+                if pipelines.count > 1 {
+                    let (ping, pong) = try intermediatePool.pair(
+                        width: inputTexture.width,
+                        height: inputTexture.height
+                    )
+                    var usePing = true
+                    for i in 0 ..< pipelines.count - 1 {
+                        let output = usePing ? ping : pong
+                        try encode(pipeline: pipelines[i], input: current, output: output, into: commandBuffer)
+                        current = output
+                        usePing.toggle()
+                    }
+                }
+
+                guard let lastPipeline = pipelines.last,
+                      let descriptor = view.currentRenderPassDescriptor,
+                      let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: descriptor) else { return }
+                encoder.setRenderPipelineState(lastPipeline)
+                encoder.setFragmentTexture(current, index: 0)
+                encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 3)
+                encoder.endEncoding()
+            }
+        } catch {
             return
         }
-        
-        if pipelines.isEmpty {
-            encoder.setRenderPipelineState(passThroughPipeline)
-            encoder.setFragmentTexture(inputTexture, index: 0)
-            encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 3)
-        } else {
-            // TODO: Actually support rendering external Filters
-        }
 
-        encoder.endEncoding()
         commandBuffer.present(drawable)
         commandBuffer.commit()
     }
